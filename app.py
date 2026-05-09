@@ -125,7 +125,7 @@ def rebase(df, base_period):
             custom_nan_messages[col] = "N/A-No Data Available"
 
     # Perform the re-basing division: base / data
-    df_rebased_indexed = base_values.div(df_rebased)
+    df_rebased_indexed = df_rebased.rdiv(base_values, axis=1)
 
     # Convert the DataFrame to object dtype to allow mixed types (floats and strings)
     df_rebased_indexed = df_rebased_indexed.astype(object)
