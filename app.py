@@ -78,9 +78,9 @@ def build_dynamic_dataset(df, valuation_period):
     monthly_part = df[df.index >= vp].copy()
     yearly_part = df[df.index < vp].copy()
 
-    # Annualize older data
-    yearly_avg = yearly_part.resample("A").mean()
-    yearly_avg.index = yearly_avg.index.year.astype(str)
+    # Annualize older data - compatible with older pandas versions
+    yearly_avg = yearly_part.groupby(yearly_part.index.year).mean()
+    yearly_avg.index = yearly_avg.index.astype(str)
 
     # Format monthly index
     monthly_part.index = monthly_part.index.strftime("%Y-M%m")
