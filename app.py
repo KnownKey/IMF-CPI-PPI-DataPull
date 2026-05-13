@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import sdmx
 import io
 import requests
@@ -34,7 +35,7 @@ country_mapping = load_country_mapping()
 # -----------------------------
 @st.cache_data
 def load_imf_data():
-    key = ".CPI._T.IX.M"
+    key = ".CPI._T.SRP_IX.M"
 
     data = IMF.data("CPI", key=key, params={})
     df = sdmx.to_pandas(data).reset_index()
@@ -57,6 +58,13 @@ def load_imf_data():
 raw_full, raw_reversed = load_imf_data()
 
 
+def get_us_column(columns):
+    for col in columns:
+        if col.strip().endswith("(USA)"):
+            return col
+    return None
+
+
 # -----------------------------
 # DYNAMIC DATASET (THIS FIXES COLAB LOGIC GAP)
 # -----------------------------
@@ -68,15 +76,21 @@ def build_dynamic_dataset(df, valuation_period):
 
     # Parse valuation period
     vp = pd.to_datetime(valuation_period, format="%Y-M%m", errors="coerce")
+    monthly_valuation = True
     if pd.isna(vp):
         vp = pd.to_datetime(valuation_period, format="%Y", errors="coerce")
+        monthly_valuation = False
 
     if pd.isna(vp):
         return None
 
     # Split dataset
-    monthly_part = df[df.index >= vp].copy()
-    yearly_part = df[df.index < vp].copy()
+    if monthly_valuation:
+        monthly_part = df[df.index > vp].copy()
+        yearly_part = df[df.index <= vp].copy()
+    else:
+        monthly_part = df[df.index >= vp].copy()
+        yearly_part = df[df.index < vp].copy()
 
     # Annualize older data - compatible with older pandas versions
     yearly_avg = yearly_part.groupby(yearly_part.index.year).mean()
@@ -103,6 +117,14 @@ def rebase(df, base_period):
     df_rebased = df.copy()
 
     # Ensure the valuation_period exists in the index
+    if base_period not in df_rebased.index:
+        if isinstance(base_period, str) and "M" in base_period:
+            try:
+                fallback_year = datetime.strptime(base_period, "%Y-M%m").year
+                base_period = str(fallback_year)
+            except ValueError:
+                pass
+
     if base_period not in df_rebased.index:
         return None
 
@@ -141,16 +163,82 @@ def rebase(df, base_period):
     return df_rebased_indexed
 
 
+def format_most_recent_label(value):
+    if isinstance(value, str):
+        try:
+            parsed = datetime.strptime(value, "%Y-M%m")
+            return parsed.strftime("%B %Y")
+        except ValueError:
+            try:
+                parsed = datetime.strptime(value, "%Y")
+                return parsed.strftime("%Y")
+            except ValueError:
+                return value
+    return value
+
+
+def parse_date_index(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.strptime(value, "%Y-M%m")
+        except ValueError:
+            try:
+                return datetime.strptime(value, "%Y")
+            except ValueError:
+                return None
+    return None
+
+
+def add_most_recent_row(df, label="Most Recent Data"):
+    summary = {}
+
+    for col in df.columns:
+        col_series = df[col].dropna()
+        if not col_series.empty:
+            best_index = None
+            best_date = None
+            for idx in col_series.index:
+                parsed = parse_date_index(idx)
+                if parsed is not None:
+                    if best_date is None or parsed > best_date:
+                        best_date = parsed
+                        best_index = idx
+                elif best_index is None:
+                    best_index = idx
+            summary[col] = format_most_recent_label(best_index) if best_index is not None else None
+        else:
+            summary[col] = None
+
+    summary_df = pd.DataFrame([summary], index=[label])
+    return summary_df
+
+
+def format_display(df):
+    formatted = df.copy()
+    for col in formatted.columns:
+        formatted[col] = formatted[col].apply(
+            lambda x: f"{x:.4f}" if isinstance(x, (int, float, np.integer, np.floating)) and not pd.isna(x) else x
+        )
+    return formatted
+
+
 # -----------------------------
 # SIDEBAR
 # -----------------------------
 st.sidebar.header("Settings")
+
+us_column = get_us_column(raw_reversed.columns)
 
 countries = st.sidebar.multiselect(
     "Select Countries",
     options=raw_reversed.columns.tolist(),
     default=raw_reversed.columns[:5].tolist()
 )
+
+if us_column and us_column not in countries:
+    countries.append(us_column)
 
 valuation_period = st.sidebar.text_input(
     "Valuation Period (e.g. 2020 or 2025-M01)",
@@ -185,9 +273,23 @@ if st.button("Run Model"):
         if result is None:
             st.error("Valuation period not found in dataset")
         else:
+            us_col = get_us_column(result.columns)
+            if us_col and len(result.columns) > 1:
+                us_values = pd.to_numeric(result[us_col], errors="coerce")
+                if us_values.notna().any():
+                    for col in result.columns:
+                        if col == us_col:
+                            continue
+                        col_values = pd.to_numeric(result[col], errors="coerce")
+                        ratio = col_values.div(us_values)
+                        result[col] = ratio.where(col_values.notna() & us_values.notna(), result[col])
+
             st.success("Model successfully executed")
 
-            st.dataframe(result, use_container_width=True)
+            most_recent_row = add_most_recent_row(df)
+            result_with_summary = pd.concat([most_recent_row, result])
+            display_result = result_with_summary.drop(columns=[us_col]) if us_col and us_col in result_with_summary.columns else result_with_summary
+            st.dataframe(format_display(display_result), use_container_width=True)
 
             # -----------------------------
             # EXPORT
@@ -195,7 +297,7 @@ if st.button("Run Model"):
             buffer = io.BytesIO()
 
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                result.to_excel(writer, sheet_name="Rebased")
+                result_with_summary.to_excel(writer, sheet_name="Rebased")
                 df_dynamic.to_excel(writer, sheet_name="Dynamic Dataset")
                 raw_full.to_excel(writer, sheet_name="Original Order")
                 raw_reversed.to_excel(writer, sheet_name="Reversed Order")
