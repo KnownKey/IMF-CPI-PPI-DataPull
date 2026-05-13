@@ -5,6 +5,7 @@ import sdmx
 import io
 import requests
 from datetime import datetime
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 # -----------------------------
 # CONFIG
@@ -44,6 +45,22 @@ st.markdown(
 
 IMF = sdmx.Client("IMF_DATA")
 APP_LAST_UPDATED = datetime.now().strftime("%Y-%m-%d")
+
+# Initialize session state for preserving UI state across reruns
+if "model_run" not in st.session_state:
+    st.session_state.model_run = False
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None
+if "last_most_recent" not in st.session_state:
+    st.session_state.last_most_recent = None
+if "last_df_dynamic" not in st.session_state:
+    st.session_state.last_df_dynamic = None
+if "last_us_col" not in st.session_state:
+    st.session_state.last_us_col = None
+if "last_html_table" not in st.session_state:
+    st.session_state.last_html_table = None
+if "last_selected_countries_data" not in st.session_state:
+    st.session_state.last_selected_countries_data = None
 
 
 # -----------------------------
@@ -270,7 +287,7 @@ def format_display(df):
 
 
 def render_html_table(df):
-    html_df = df.copy()
+    html_df = df.copy().astype(object)
     for col in html_df.columns:
         html_df[col] = html_df[col].apply(
             lambda x: f"{x:.4f}" if isinstance(x, (int, float, np.integer, np.floating)) and not pd.isna(x) else ("" if pd.isna(x) else x)
@@ -280,10 +297,10 @@ def render_html_table(df):
     html_df.index = html_df.index.map(lambda x: f"<i>{x}</i>" if x == "Most Recent Data" else x)
 
     if not html_df.empty:
-        first_row = html_df.index[0]
-        html_df.loc[first_row] = html_df.loc[first_row].apply(
+        first_row = html_df.iloc[0].apply(
             lambda x: f"<i>{x}</i>" if not (isinstance(x, str) and x.startswith("<i>")) else x
-        )
+        ).tolist()
+        html_df.iloc[0, :] = first_row
 
     html = html_df.to_html(escape=False, index=True, index_names=False)
     html = html.replace(
@@ -299,6 +316,141 @@ def render_html_table(df):
         '<td style="padding:8px 12px;white-space:nowrap;text-align:center;border:1px solid #888;">'
     )
     return f"<div style='overflow-x:auto;'>{html}</div>"
+
+
+def get_column_letter(col_num):
+    """Convert column number to Excel column letter (1=A, 2=B, ..., 27=AA, etc.)"""
+    letter = ""
+    while col_num > 0:
+        col_num -= 1
+        letter = chr(65 + (col_num % 26)) + letter
+        col_num //= 26
+    return letter
+
+
+def create_styled_excel(df, raw_data, valuation_period):
+    """Create an Excel file with formatting matching the HTML table, including underlying data tab"""
+    buffer = io.BytesIO()
+    
+    def format_valuation_period(valuation_period):
+        try:
+            parsed = datetime.strptime(valuation_period, "%Y-M%m")
+            return parsed.strftime("%B %Y")
+        except ValueError:
+            try:
+                parsed = datetime.strptime(valuation_period, "%Y")
+                return parsed.strftime("%Y")
+            except ValueError:
+                return valuation_period
+
+    valuation_label = f"Valuation Period: {format_valuation_period(valuation_period)}"
+
+    # Create a copy and format the data
+    excel_df = df.copy()
+    excel_df = excel_df.reset_index().rename(columns={"index": "Time"})
+    
+    # Prepare underlying data (monthly raw data for all countries)
+    underlying_df = raw_data.copy()
+    underlying_df = underlying_df.reset_index().rename(columns={"index": "Time"})
+    
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        excel_df.to_excel(writer, sheet_name="Selected Countries", index=False, startrow=2)
+        underlying_df.to_excel(writer, sheet_name="Underlying Data", index=False, startrow=2)
+        
+        # Get both worksheets
+        ws_selected = writer.sheets["Selected Countries"]
+        ws_underlying = writer.sheets["Underlying Data"]
+        
+        # Add metadata row at the top for both sheets
+        today_date = datetime.now().strftime("%B %d, %Y")
+        metadata_text = f'Data from IMF website (https://data.imf.org/en/datasets/IMF.STA.CPI) as of "{today_date}". See Github Repo for underlying calculations (https://github.com/KnownKey/imf-cpi-app)'
+        
+        for ws in [ws_selected, ws_underlying]:
+            ws['A1'] = metadata_text
+            ws['A1'].font = Font(italic=True, size=9)
+            ws['A2'] = valuation_label
+            ws['A2'].font = Font(italic=True, size=9)
+        
+        # Color the Underlying Data tab gray
+        ws_underlying.sheet_properties.tabColor = "D3D3D3"
+        
+        # Define styles
+        header_font = Font(bold=True, size=11)
+        header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin")
+        )
+        
+        center_alignment = Alignment(horizontal="center", vertical="center")
+        left_center_alignment = Alignment(horizontal="center", vertical="center")
+        bold_font = Font(bold=True)
+        italic_font = Font(italic=True)
+        
+        # Format both sheets
+        for ws, data_df, is_underlying in [(ws_selected, excel_df, False), (ws_underlying, underlying_df, True)]:
+            # Format header row (row 3)
+            for col_num, value in enumerate(data_df.columns, 1):
+                cell = ws.cell(row=3, column=col_num)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = border
+                # Remove "Time" text from first column header
+                if col_num == 1:
+                    cell.value = ""
+            
+            # Format data rows (starting from row 4)
+            for row_num, row in enumerate(data_df.values, 4):
+                for col_num, value in enumerate(row, 1):
+                    cell = ws.cell(row=row_num, column=col_num)
+                    cell.border = border
+                    
+                    # Format first column (Time) - CENTER aligned
+                    if col_num == 1:
+                        cell.font = bold_font
+                        cell.alignment = left_center_alignment
+                        # Italicize "Most Recent Data"
+                        if value == "Most Recent Data":
+                            cell.font = Font(bold=True, italic=True)
+                        # Format dates in Underlying Data sheet (convert "2026-M03" to "March 2026")
+                        elif is_underlying and isinstance(value, str) and "-M" in value:
+                            try:
+                                year, month_str = value.split("-M")
+                                month_num = int(month_str)
+                                months_list = ["January", "February", "March", "April", "May", "June", 
+                                             "July", "August", "September", "October", "November", "December"]
+                                if 1 <= month_num <= 12:
+                                    cell.value = f"{months_list[month_num - 1]} {year}"
+                            except (ValueError, IndexError):
+                                pass
+                    else:
+                        # Format numeric cells with 4 decimal places and center alignment
+                        if isinstance(value, (int, float, np.integer, np.floating)) and not pd.isna(value):
+                            cell.value = round(value, 4)
+                            cell.number_format = '0.0000'
+                        elif isinstance(value, str) and value and not value.startswith("N/A"):
+                            # Italicize date values in Most Recent Data row
+                            if row_num == 3:  # Most Recent Data row
+                                cell.font = italic_font
+                        
+                        cell.alignment = center_alignment
+            
+            # Adjust column widths - different for each sheet
+            ws.column_dimensions['A'].width = 20
+            col_width = 15 if is_underlying else 30
+            for col_num in range(2, len(data_df.columns) + 1):
+                ws.column_dimensions[get_column_letter(col_num)].width = col_width
+            
+            # Set row heights for better text wrapping visibility
+            ws.row_dimensions[3].height = 40
+    
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 
 # -----------------------------
@@ -419,11 +571,6 @@ if st.button("Run Model"):
                         ratio = col_values.div(us_values)
                         result[col] = ratio.where(col_values.notna() & us_values.notna(), result[col])
 
-            success_col, download_col = st.columns([4, 1])
-            
-            with success_col:
-                st.success("Model successfully executed")
-            
             # Prepare data for downloads - use raw selected data for the most recent date
             most_recent_row = add_most_recent_row(df)
             result_with_summary = pd.concat([most_recent_row, result])
@@ -432,30 +579,42 @@ if st.button("Run Model"):
             display_df.index.name = None
             html_table = render_html_table(display_df)
 
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                result_with_summary.to_excel(writer, sheet_name="Rebased")
-                df_dynamic.to_excel(writer, sheet_name="Dynamic Dataset")
-                raw_full.to_excel(writer, sheet_name="Original Order")
-                raw_reversed.to_excel(writer, sheet_name="Reversed Order")
+            # Store results in session state to preserve across reruns
+            st.session_state.model_run = True
+            st.session_state.last_result = result_with_summary
+            st.session_state.last_most_recent = most_recent_row
+            st.session_state.last_df_dynamic = df_dynamic
+            st.session_state.last_us_col = us_col
+            st.session_state.last_html_table = html_table
+            st.session_state.last_selected_countries_data = result_with_summary.copy()
+            st.session_state.last_raw_full = raw_full.copy()
+            st.session_state.last_raw_reversed = raw_reversed.copy()
 
-            # Prepare selected countries data for download
-            selected_countries_df = result_with_summary.copy()
-            selected_countries_buffer = io.BytesIO()
-            with pd.ExcelWriter(selected_countries_buffer, engine="openpyxl") as writer:
-                selected_countries_df.to_excel(writer, sheet_name="Selected Countries")
-            
-            # Add Download Selected Countries button next to success message
-            with download_col:
-                st.download_button(
-                    label="📥 Download Selected Countries",
-                    data=selected_countries_buffer.getvalue(),
-                    file_name="imf_cpi_selected_countries.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-            
-            st.markdown(html_table, unsafe_allow_html=True)
+# Display results if model was run (persists across download button clicks)
+if st.session_state.model_run:
+    success_col, download_col = st.columns([4, 1])
+    
+    with success_col:
+        st.success("Model successfully executed")
+    
+    # Generate filename with today's date
+    today_date = datetime.now().strftime("%Y%m%d")
+    filename = f"IMF_CPI_Output_{today_date}.xlsx"
+    
+    # Create styled Excel file with both tabs
+    excel_data = create_styled_excel(st.session_state.last_selected_countries_data, st.session_state.last_raw_reversed, valuation_period)
+    
+    # Add Download Selected Countries button next to success message
+    with download_col:
+        st.download_button(
+            label="📥 Download Selected Countries",
+            data=excel_data,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    
+    st.markdown(st.session_state.last_html_table, unsafe_allow_html=True)
 
 
 # -----------------------------
