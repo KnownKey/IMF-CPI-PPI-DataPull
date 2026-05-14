@@ -3,3 +3,4 @@ pandas
 sdmx1
 openpyxl
 requests
+pytest
