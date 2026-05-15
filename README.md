@@ -1,33 +1,63 @@
-# IMF CPI App
+# IMF CPI/PPI Raw Export
 
-Streamlit app for building IMF CPI-based relative indexing tables and exporting the results to Excel.
+Command-line exporter for raw monthly IMF CPI and PPI index data. There is no Streamlit app and no rebasing/model interface: the script pulls IMF observations and writes them directly to a styled Excel workbook.
 
-## What It Does
+## Output
 
-- Downloads CPI series from the IMF data service.
-- Lets you select countries and a valuation period.
-- Rebases CPI values to the selected period.
-- Normalizes selected-country CPI movement against the United States CPI series.
-- Exports the selected country output plus underlying data to an Excel workbook.
+The workbook contains two sheets:
 
-## Run Locally
+- `CPI Raw Data` from IMF dataflow `CPI`, key `.CPI._T.SRP_IX.M`
+- `PPI Raw Data` from IMF dataflow `PPI`, key `.PPI.IX.M`
+
+Each sheet keeps the prior Excel styling pattern: metadata rows, blank first header cell, gray bold headers, centered values, four-decimal numeric formatting, formatted month labels, and a `Most Recent Data` row showing the latest available observation per country.
+
+The default filename is based on the latest observation period in the downloaded data, for example:
+
+```bash
+IMF_CPI_PPI_Raw_202603.xlsx
+```
+
+## Install
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
 ```
 
-The app opens on Streamlit's default local port, usually `http://localhost:8501`.
+## Run
+
+Export all available IMF countries:
+
+```bash
+python app.py
+```
+
+Export specific countries:
+
+```bash
+python app.py --countries USA,CAN,GBR
+```
+
+Limit the IMF date range:
+
+```bash
+python app.py --start-period 2000-M01 --end-period 2026-M03
+```
+
+Choose an output path:
+
+```bash
+python app.py --output output/imf_raw.xlsx
+```
 
 ## Tests
 
 ```bash
-python -m pytestpytest
+python -m pytest
 ```
 
-The tests cover the pure calculation helpers and do not call the IMF network data load.
+The tests cover key construction, period/date handling, raw pivoting, output filename dating, and Excel workbook formatting. They do not call the IMF API.
 
-## Data Source
+## Data Sources
 
-CPI data is retrieved from the IMF CPI dataset:
-https://data.imf.org/en/datasets/IMF.STA.CPI
+- CPI: https://data.imf.org/en/datasets/IMF.STA:CPI
+- PPI: https://data.imf.org/en/datasets/IMF.STA:PPI
