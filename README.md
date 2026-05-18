@@ -6,9 +6,9 @@ Command-line exporter for raw monthly index data from the IMF and BLS. The scrip
 
 The workbook contains three sheets:
 
-- `CPI Raw Data` from IMF dataflow `CPI`
+- `CPI Raw Data` from IMF dataflow `CPI`, key `CPI._T.IX.M`
 - `PPI Raw Data` from IMF dataflow `PPI`
-- `BLS PPI Raw Data` from BLS PPI series `WPUFD4` (Final Demand)
+- `BLS PPI Raw Data` from BLS PPI series `WPU00000000` (All Commodities)
 
 ### Excel Structure & Styling
 Each sheet follows a consistent professional layout:
@@ -62,4 +62,4 @@ The tests cover data fetching (mocked), pivoting, structural layout, and Excel f
 
 - IMF CPI: https://data.imf.org/en/datasets/IMF.STA:CPI
 - IMF PPI: https://data.imf.org/en/datasets/IMF.STA:PPI
-- BLS PPI: https://www.bls.gov/ppi/ (Series WPUFD4)
+- BLS PPI: https://www.bls.gov/ppi/ (Series WPU00000000)

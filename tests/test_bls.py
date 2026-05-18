@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
-from app import BLS_PPI_SERIES, fetch_bls_series, pivot_raw_data, write_raw_excel
+from app import BLS_PPI_SERIES, bls_year_ranges, fetch_bls_series, pivot_raw_data, write_raw_excel
 
 
 @patch("requests.post")
@@ -18,7 +18,7 @@ def test_fetch_bls_series_success(mock_post):
         "Results": {
             "series": [
                 {
-                    "seriesID": "WPUFD4",
+                    "seriesID": "WPU00000000",
                     "data": [
                         {"year": "2024", "period": "M01", "value": "123.4"},
                         {"year": "2023", "period": "M12", "value": "122.5"},
@@ -41,9 +41,60 @@ def test_fetch_bls_series_success(mock_post):
     # Verify payload
     args, kwargs = mock_post.call_args
     payload = json.loads(kwargs["data"])
-    assert payload["seriesid"] == ["WPUFD4"]
+    assert payload["seriesid"] == ["WPU00000000"]
     assert payload["startyear"] == "2023"
     assert payload["endyear"] == "2024"
+
+
+def test_bls_year_ranges_cover_all_commodities_history():
+    assert bls_year_ranges(end_period="2026-M03") == [
+        (1913, 1932),
+        (1933, 1952),
+        (1953, 1972),
+        (1973, 1992),
+        (1993, 2012),
+        (2013, 2026),
+    ]
+
+
+@patch("requests.post")
+def test_fetch_bls_series_requests_all_year_chunks(mock_post):
+    def response_for_request(url, data, headers):
+        payload = json.loads(data)
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "REQUEST_SUCCEEDED",
+            "Results": {
+                "series": [
+                    {
+                        "seriesID": "WPU00000000",
+                        "data": [
+                            {
+                                "year": payload["startyear"],
+                                "period": "M01",
+                                "value": "100.0",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        return mock_response
+
+    mock_post.side_effect = response_for_request
+
+    result = fetch_bls_series(BLS_PPI_SERIES, end_period="1955-M12")
+
+    requested_ranges = [
+        (
+            json.loads(call.kwargs["data"])["startyear"],
+            json.loads(call.kwargs["data"])["endyear"],
+        )
+        for call in mock_post.call_args_list
+    ]
+    assert requested_ranges == [("1913", "1932"), ("1933", "1952"), ("1953", "1955")]
+    assert result["TIME_PERIOD"].tolist() == ["1913-M01", "1933-M01", "1953-M01"]
 
 
 @patch("requests.post")

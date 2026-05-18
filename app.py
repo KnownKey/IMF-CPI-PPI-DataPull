@@ -31,7 +31,7 @@ DEFAULT_SERIES = (
     IMFSeries(
         name="CPI",
         dataflow="CPI",
-        key_suffix="CPI._T.SRP_IX.M",
+        key_suffix="CPI._T.IX.M",
         source_url="https://data.imf.org/en/datasets/IMF.STA:CPI",
     ),
     IMFSeries(
@@ -44,11 +44,13 @@ DEFAULT_SERIES = (
 
 BLS_PPI_SERIES = BLSSeries(
     name="BLS PPI",
-    series_id="WPUFD4",
+    series_id="WPU00000000",
     source_url="https://www.bls.gov/ppi/",
 )
 
 BLS_API_KEY = "fa7905c8cd9f49a4a171df26d7f42a37"
+BLS_ALL_COMMODITIES_START_YEAR = 1913
+BLS_MAX_YEARS_PER_REQUEST = 20
 
 OUTPUT_FILENAME_TEMPLATE = "IMF_CPI_PPI_Raw_{date}.xlsx"
 COUNTRY_MAPPING_URL = "https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv"
@@ -149,36 +151,48 @@ def fetch_series_frame(client, series, countries=None, start_period=None, end_pe
     return df
 
 
+def bls_year_ranges(start_period=None, end_period=None):
+    start_year = int(start_period[:4]) if start_period else BLS_ALL_COMMODITIES_START_YEAR
+    end_year = int(end_period[:4]) if end_period else datetime.now().year
+
+    ranges = []
+    year = start_year
+    while year <= end_year:
+        range_end = min(year + BLS_MAX_YEARS_PER_REQUEST - 1, end_year)
+        ranges.append((year, range_end))
+        year = range_end + 1
+    return ranges
+
+
 def fetch_bls_series(series, start_period=None, end_period=None):
     url = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
-    payload = {
-        "seriesid": [series.series_id],
-        "registrationkey": BLS_API_KEY,
-    }
-
-    if start_period:
-        payload["startyear"] = start_period[:4]
-    if end_period:
-        payload["endyear"] = end_period[:4]
-
     headers = {"Content-type": "application/json"}
-    response = requests.post(url, data=json.dumps(payload), headers=headers)
-    response.raise_for_status()
-
-    json_data = response.json()
-    if json_data["status"] != "REQUEST_SUCCEEDED":
-        raise RuntimeError(f"BLS API error: {json_data.get('message')}")
-
     results = []
-    for s in json_data["Results"]["series"]:
-        for item in s["data"]:
-            results.append(
-                {
-                    "TIME_PERIOD": f"{item['year']}-{item['period']}",
-                    "COUNTRY": "USA",
-                    "value": float(item["value"]),
-                }
-            )
+
+    for start_year, end_year in bls_year_ranges(start_period, end_period):
+        payload = {
+            "seriesid": [series.series_id],
+            "registrationkey": BLS_API_KEY,
+            "startyear": str(start_year),
+            "endyear": str(end_year),
+        }
+
+        response = requests.post(url, data=json.dumps(payload), headers=headers)
+        response.raise_for_status()
+
+        json_data = response.json()
+        if json_data["status"] != "REQUEST_SUCCEEDED":
+            raise RuntimeError(f"BLS API error: {json_data.get('message')}")
+
+        for s in json_data["Results"]["series"]:
+            for item in s["data"]:
+                results.append(
+                    {
+                        "TIME_PERIOD": f"{item['year']}-{item['period']}",
+                        "COUNTRY": "USA",
+                        "value": float(item["value"]),
+                    }
+                )
 
     if not results:
         raise RuntimeError(f"No BLS observations returned for {series.name}.")
