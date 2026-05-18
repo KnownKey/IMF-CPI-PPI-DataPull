@@ -1,20 +1,27 @@
-# IMF CPI/PPI Raw Export
+# IMF & BLS CPI/PPI Raw Export
 
-Command-line exporter for raw monthly IMF CPI and PPI index data. There is no Streamlit app and no rebasing/model interface: the script pulls IMF observations and writes them directly to a styled Excel workbook.
+Command-line exporter for raw monthly index data from the IMF and BLS. The script pulls observations and writes them directly to a styled Excel workbook.
 
 ## Output
 
-The workbook contains two sheets:
+The workbook contains three sheets:
 
-- `CPI Raw Data` from IMF dataflow `CPI`, key `.CPI._T.SRP_IX.M`
-- `PPI Raw Data` from IMF dataflow `PPI`, key `.PPI.IX.M`
+- `CPI Raw Data` from IMF dataflow `CPI`
+- `PPI Raw Data` from IMF dataflow `PPI`
+- `BLS PPI Raw Data` from BLS PPI series `WPUFD4` (Final Demand)
 
-Each sheet keeps the prior Excel styling pattern: metadata rows, blank first header cell, gray bold headers, centered values, four-decimal numeric formatting, formatted month labels, and a `Most Recent Data` row showing the latest available observation per country.
+### Excel Structure & Styling
+Each sheet follows a consistent professional layout:
+- **Metadata**: Header rows with data source links and generation timestamps.
+- **Headers (Row 3)**: Bold, light gray headers displaying full **Country Names**.
+- **Summary Row (Row 4)**: Bold, italic, light gray row displaying 3-letter **Country Codes** (ISO3).
+- **Summary Row (Row 5)**: `Most Recent Data` row showing the latest available period per country.
+- **Year Column**: A dedicated column on the far left displaying the year for all data rows.
+- **Data Formatting**: Centered values, four-decimal numeric precision, and formatted month labels (e.g., "January 2024").
 
-The default filename is based on the latest observation period in the downloaded data, for example:
-
+The default filename is based on the current date:
 ```bash
-IMF_CPI_PPI_Raw_202603.xlsx
+IMF_CPI_PPI_Raw_20260518.xlsx
 ```
 
 ## Install
@@ -25,7 +32,7 @@ pip install -r requirements.txt
 
 ## Run
 
-Export all available IMF countries:
+Export all available IMF countries (and USA for BLS):
 
 ```bash
 python app.py
@@ -37,27 +44,22 @@ Export specific countries:
 python app.py --countries USA,CAN,GBR
 ```
 
-Limit the IMF date range:
+Limit the date range:
 
 ```bash
 python app.py --start-period 2000-M01 --end-period 2026-M03
 ```
 
-Choose an output path:
-
-```bash
-python app.py --output output/imf_raw.xlsx
-```
-
 ## Tests
 
 ```bash
-python -m pytest
+PYTHONPATH=. pytest
 ```
 
-The tests cover key construction, period/date handling, raw pivoting, output filename dating, and Excel workbook formatting. They do not call the IMF API.
+The tests cover data fetching (mocked), pivoting, structural layout, and Excel formatting for both IMF and BLS sources.
 
 ## Data Sources
 
-- CPI: https://data.imf.org/en/datasets/IMF.STA:CPI
-- PPI: https://data.imf.org/en/datasets/IMF.STA:PPI
+- IMF CPI: https://data.imf.org/en/datasets/IMF.STA:CPI
+- IMF PPI: https://data.imf.org/en/datasets/IMF.STA:PPI
+- BLS PPI: https://www.bls.gov/ppi/ (Series WPUFD4)

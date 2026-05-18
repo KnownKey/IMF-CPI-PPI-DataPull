@@ -48,7 +48,7 @@ def test_pivot_raw_data_keeps_latest_period_first():
     assert result.loc["2026-M01", "USA"] == 145.0
 
 
-def test_pivot_raw_data_adds_full_country_names_when_mapping_is_available():
+def test_pivot_raw_data_uses_iso_codes_as_columns():
     frame = pd.DataFrame(
         {
             "TIME_PERIOD": ["2026-M01", "2026-M01"],
@@ -59,7 +59,7 @@ def test_pivot_raw_data_adds_full_country_names_when_mapping_is_available():
 
     result = pivot_raw_data(frame, {"USA": "United States", "CAN": "Canada"})
 
-    assert list(result.columns) == ["Canada (CAN)", "United States (USA)"]
+    assert list(result.columns) == ["CAN", "USA"]
 
 
 def test_add_most_recent_row_uses_latest_non_empty_period_per_country():
@@ -77,13 +77,12 @@ def test_add_most_recent_row_uses_latest_non_empty_period_per_country():
     assert result.loc["Most Recent Data", "USA"] == "January 2026"
 
 
-def test_default_output_path_uses_latest_data_period():
+def test_default_output_path_uses_current_date():
     tables = {
         DEFAULT_SERIES[0]: pd.DataFrame({"USA": [1.0]}, index=["2026-M01"]),
-        DEFAULT_SERIES[1]: pd.DataFrame({"USA": [1.0]}, index=["2026-M03"]),
     }
-
-    assert default_output_path(tables).name == "IMF_CPI_PPI_Raw_202603.xlsx"
+    date_stamp = datetime.now().strftime("%Y%m%d")
+    assert default_output_path(tables).name == f"IMF_CPI_PPI_Raw_{date_stamp}.xlsx"
 
 
 def test_write_raw_excel_preserves_expected_workbook_formatting(tmp_path):
@@ -98,8 +97,9 @@ def test_write_raw_excel_preserves_expected_workbook_formatting(tmp_path):
         ),
     }
     output_path = tmp_path / "raw.xlsx"
+    mapping = {"USA": "United States", "CAN": "Canada"}
 
-    write_raw_excel(tables, output_path, generated_at=datetime(2026, 5, 15))
+    write_raw_excel(tables, output_path, generated_at=datetime(2026, 5, 15), country_mapping=mapping)
     workbook = load_workbook(output_path)
     ws = workbook["CPI Raw Data"]
 
@@ -107,10 +107,20 @@ def test_write_raw_excel_preserves_expected_workbook_formatting(tmp_path):
     assert "latest observation period in this sheet: January 2026" in ws["A1"].value
     assert ws["A2"].font.italic is True
     assert ws["A3"].value is None
-    assert ws["B3"].font.bold is True
-    assert ws["B3"].fill.fgColor.rgb == "00F2F2F2"
-    assert ws["A4"].value == "Most Recent Data"
-    assert ws["A4"].font.italic is True
-    assert ws["A5"].value == "January 2026"
-    assert ws["B5"].number_format == "0.0000"
-    assert ws["B5"].value == 145.1235
+    assert ws["B3"].value is None
+    assert ws["C3"].value == "United States"  # Row 3 is Name
+    assert ws["D3"].value == "Canada"
+
+    assert ws["A4"].value is None
+    assert ws["B4"].value == "Country Code"
+    assert ws["C4"].value == "USA"  # Row 4 is Code
+    assert ws["D4"].value == "CAN"
+
+    assert ws["A5"].value is None
+    assert ws["B5"].value == "Most Recent Data"
+    assert ws["C5"].value == "January 2026"
+
+    assert ws["A6"].value == 2026
+    assert ws["B6"].value == "January 2026"
+    assert ws["C6"].number_format == "0.0000"
+    assert ws["C6"].value == 145.1235

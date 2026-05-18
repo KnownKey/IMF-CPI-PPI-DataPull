@@ -1,5 +1,6 @@
 import argparse
 import io
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,13 @@ class IMFSeries:
     source_url: str
 
 
+@dataclass(frozen=True)
+class BLSSeries:
+    name: str
+    series_id: str
+    source_url: str
+
+
 DEFAULT_SERIES = (
     IMFSeries(
         name="CPI",
@@ -33,6 +41,14 @@ DEFAULT_SERIES = (
         source_url="https://data.imf.org/en/datasets/IMF.STA:PPI",
     ),
 )
+
+BLS_PPI_SERIES = BLSSeries(
+    name="BLS PPI",
+    series_id="WPUFD4",
+    source_url="https://www.bls.gov/ppi/",
+)
+
+BLS_API_KEY = "fa7905c8cd9f49a4a171df26d7f42a37"
 
 OUTPUT_FILENAME_TEMPLATE = "IMF_CPI_PPI_Raw_{date}.xlsx"
 COUNTRY_MAPPING_URL = "https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv"
@@ -115,7 +131,7 @@ def country_column_name(country_code, country_mapping=None):
     country_code = str(country_code)
     country_name = (country_mapping or {}).get(country_code)
     if country_name:
-        return f"{country_name} ({country_code})"
+        return country_name
     return country_code
 
 
@@ -133,6 +149,43 @@ def fetch_series_frame(client, series, countries=None, start_period=None, end_pe
     return df
 
 
+def fetch_bls_series(series, start_period=None, end_period=None):
+    url = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+    payload = {
+        "seriesid": [series.series_id],
+        "registrationkey": BLS_API_KEY,
+    }
+
+    if start_period:
+        payload["startyear"] = start_period[:4]
+    if end_period:
+        payload["endyear"] = end_period[:4]
+
+    headers = {"Content-type": "application/json"}
+    response = requests.post(url, data=json.dumps(payload), headers=headers)
+    response.raise_for_status()
+
+    json_data = response.json()
+    if json_data["status"] != "REQUEST_SUCCEEDED":
+        raise RuntimeError(f"BLS API error: {json_data.get('message')}")
+
+    results = []
+    for s in json_data["Results"]["series"]:
+        for item in s["data"]:
+            results.append(
+                {
+                    "TIME_PERIOD": f"{item['year']}-{item['period']}",
+                    "COUNTRY": "USA",
+                    "value": float(item["value"]),
+                }
+            )
+
+    if not results:
+        raise RuntimeError(f"No BLS observations returned for {series.name}.")
+
+    return pd.DataFrame(results)
+
+
 def pivot_raw_data(df, country_mapping=None):
     required = {"TIME_PERIOD", "COUNTRY", "value"}
     missing = required.difference(df.columns)
@@ -145,7 +198,6 @@ def pivot_raw_data(df, country_mapping=None):
         values="value",
         aggfunc="first",
     )
-    raw.columns = [country_column_name(col, country_mapping) for col in raw.columns]
     ordered_index = sorted(raw.index, key=period_sort_key, reverse=True)
     return raw.loc[ordered_index]
 
@@ -157,13 +209,16 @@ def format_dataset_date(date_value):
 
 
 def default_output_path(tables):
-    latest_dates = [latest_period(table) for table in tables.values()]
-    latest_dates = [date_value for date_value in latest_dates if date_value is not None]
-    date_stamp = max(latest_dates).strftime("%Y%m") if latest_dates else datetime.now().strftime("%Y%m%d")
+    date_stamp = datetime.now().strftime("%Y%m%d")
     return Path(OUTPUT_FILENAME_TEMPLATE.format(date=date_stamp))
 
 
-def write_raw_excel(tables, output_path=None, generated_at=None):
+def add_country_code_row(df, label="Country Code"):
+    codes = {col: col for col in df.columns}
+    return pd.DataFrame([codes], index=[label])
+
+
+def write_raw_excel(tables, output_path=None, generated_at=None, country_mapping=None):
     generated_at = generated_at or datetime.now()
     output_path = Path(output_path) if output_path else default_output_path(tables)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,14 +227,25 @@ def write_raw_excel(tables, output_path=None, generated_at=None):
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         sheet_payloads = []
         for series, raw_df in tables.items():
-            export_df = pd.concat([add_most_recent_row(raw_df), raw_df.copy()])
-            export_df = export_df.reset_index().rename(columns={"index": "Time"})
+            summary_rows = pd.concat([add_country_code_row(raw_df), add_most_recent_row(raw_df)])
+            export_df = pd.concat([summary_rows, raw_df.copy()])
+            export_df = export_df.reset_index().rename(columns={"index": ""})
+
+            def get_year(time_val):
+                if time_val in ["Country Code", "Most Recent Data"]:
+                    return ""
+                p = parse_period(time_val)
+                return p.year if p else ""
+
+            export_df.insert(0, "Year", export_df[""].map(get_year))
+
             sheet_name = f"{series.name} Raw Data"
             export_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=2)
             sheet_payloads.append((writer.sheets[sheet_name], series, export_df, latest_period(raw_df)))
 
         header_font = Font(bold=True, size=11)
         header_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+        summary_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
         header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         center_alignment = Alignment(horizontal="center", vertical="center")
         bold_font = Font(bold=True)
@@ -192,45 +258,61 @@ def write_raw_excel(tables, output_path=None, generated_at=None):
         )
 
         for ws, series, export_df, latest_date in sheet_payloads:
+            source_name = "BLS" if "bls.gov" in series.source_url else "IMF"
             latest_label = format_dataset_date(latest_date)
             ws["A1"] = (
-                f"Raw {series.name} index data from IMF ({series.source_url}); "
+                f"Raw {series.name} index data from {source_name} ({series.source_url}); "
                 f"latest observation period in this sheet: {latest_label}; "
                 f"file generated {generated_at.strftime('%B %d, %Y')}."
             )
             ws["A1"].font = Font(italic=True, size=9)
-            ws["A2"] = "Values are unrebased IMF observations; no model calculations are applied."
+            ws["A2"] = f"Values are unrebased {source_name} observations; no model calculations are applied."
             ws["A2"].font = Font(italic=True, size=9)
 
-            for col_num in range(1, len(export_df.columns) + 1):
+            # Set Row 3 Headers with Country Names
+            for col_num, col_name in enumerate(export_df.columns, 1):
                 cell = ws.cell(row=3, column=col_num)
                 cell.font = header_font
                 cell.fill = header_fill
                 cell.alignment = header_alignment
                 cell.border = border
-                if col_num == 1:
+                
+                if col_num in [1, 2]:
                     cell.value = ""
+                else:
+                    # Rename the header cell to full country name
+                    cell.value = country_column_name(col_name, country_mapping)
 
             for row_num, row in enumerate(export_df.values, 4):
-                is_most_recent_row = row[0] == "Most Recent Data"
+                label = row[1]
+                is_summary_row = label in ["Country Code", "Most Recent Data"]
+                is_country_code_row = label == "Country Code"
+                is_most_recent_row = label == "Most Recent Data"
+                
                 for col_num, value in enumerate(row, 1):
                     cell = ws.cell(row=row_num, column=col_num)
                     cell.border = border
                     cell.alignment = center_alignment
 
-                    if col_num == 1:
+                    if col_num <= 2:  # Year or Time
                         cell.font = Font(bold=True, italic=is_most_recent_row)
-                        if not is_most_recent_row:
+                        if col_num == 2 and not is_summary_row:
                             cell.value = format_period_label(value)
                     else:
                         if is_most_recent_row:
                             cell.font = italic_font
+                        
                         if isinstance(value, (int, float, np.integer, np.floating)) and not pd.isna(value):
                             cell.value = round(float(value), 4)
                             cell.number_format = "0.0000"
 
-            ws.column_dimensions["A"].width = 20
-            for col_num in range(2, len(export_df.columns) + 1):
+                    if is_country_code_row:
+                        cell.fill = summary_fill
+                        cell.font = Font(bold=True, italic=True)
+
+            ws.column_dimensions["A"].width = 10
+            ws.column_dimensions["B"].width = 20
+            for col_num in range(3, len(export_df.columns) + 1):
                 ws.column_dimensions[get_column_letter(col_num)].width = 15
             ws.row_dimensions[3].height = 40
 
@@ -265,12 +347,26 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    countries = parse_countries(args.countries)
+    country_mapping = load_country_mapping()
     tables = fetch_raw_tables(
-        countries=parse_countries(args.countries),
+        countries=countries,
         start_period=args.start_period,
         end_period=args.end_period,
     )
-    output_path = write_raw_excel(tables, args.output)
+
+    # Fetch and integrate BLS PPI data
+    try:
+        bls_frame = fetch_bls_series(
+            BLS_PPI_SERIES,
+            start_period=args.start_period,
+            end_period=args.end_period,
+        )
+        tables[BLS_PPI_SERIES] = pivot_raw_data(bls_frame, country_mapping)
+    except Exception as e:
+        print(f"Warning: Could not fetch BLS data: {e}")
+
+    output_path = write_raw_excel(tables, args.output, country_mapping=country_mapping)
     print(f"Wrote {output_path}")
     return output_path
 
