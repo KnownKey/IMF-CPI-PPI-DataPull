@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,10 @@ import numpy as np
 import pandas as pd
 import requests
 import sdmx
+from dotenv import load_dotenv
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+load_dotenv()
 
 
 @dataclass(frozen=True)
@@ -48,7 +52,7 @@ BLS_PPI_SERIES = BLSSeries(
     source_url="https://www.bls.gov/ppi/",
 )
 
-BLS_API_KEY = "fa7905c8cd9f49a4a171df26d7f42a37"
+BLS_API_KEY = os.getenv("BLS_API_KEY", "")
 BLS_ALL_COMMODITIES_START_YEAR = 1913
 BLS_MAX_YEARS_PER_REQUEST = 20
 
