@@ -1,6 +1,13 @@
 .env
+.env*.local
 .DS_Store
 __pycache__/
 venv/
 *.pyc
 *.xlsx
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
